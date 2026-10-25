@@ -1,0 +1,26 @@
+name: puzzle_helper
+description: 即時 AR 拼圖定位助手 App — 支援「1張全貌底圖 + 多張高解析局部圖」混合映射與本地端 OpenCV 雙引擎視覺比對。
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  camera: ^0.11.0+2
+  image_picker: ^1.1.2
+  opencv_dart: ^1.2.4
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  uuid: ^4.4.2
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
