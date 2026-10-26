@@ -95,7 +95,7 @@ class ReferenceMapper {
     final ovNorm = normalizeIlluminationAndColor(overviewMat);
     final tileNorm = normalizeIlluminationAndColor(tileMat);
 
-    final akaze = cv.AKAZE.create();
+    final akaze = cv.AKAZE.empty();
     final matcher = cv.BFMatcher.create(type: cv.NORM_HAMMING);
 
     try {
@@ -134,10 +134,10 @@ class ReferenceMapper {
           final m = pair[0];
           final n = pair[1];
           if (m.distance < 0.78 * n.distance) {
-            final ptTile = kpTile[m.queryIdx].pt;
-            final ptOv = kpOv[m.trainIdx].pt;
-            srcPtsList.add(ptTile);
-            dstPtsList.add(ptOv);
+            final kpT = kpTile[m.queryIdx];
+            final kpO = kpOv[m.trainIdx];
+            srcPtsList.add(cv.Point2f(kpT.x, kpT.y));
+            dstPtsList.add(cv.Point2f(kpO.x, kpO.y));
           }
         }
       }

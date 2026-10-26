@@ -74,7 +74,7 @@ class PuzzleMatcher {
   /// 初始化專案參考圖索引（全貌底圖 + 所有已對齊的高解析局部圖）
   void initializeIndex() {
     dispose();
-    final akaze = cv.AKAZE.create();
+    final akaze = cv.AKAZE.empty();
     try {
       // 1. 建立全貌底圖索引
       _overviewTarget = _buildTargetIndex(
@@ -231,7 +231,7 @@ class PuzzleMatcher {
     required List<_IndexedReferenceTarget> targets,
   }) {
     final results = <CandidateLocation>[];
-    final akaze = cv.AKAZE.create();
+    final akaze = cv.AKAZE.empty();
     final matcher = cv.BFMatcher.create(type: cv.NORM_HAMMING);
 
     try {
@@ -259,8 +259,10 @@ class PuzzleMatcher {
             final m = pair[0];
             final n = pair[1];
             if (m.distance < 0.78 * n.distance) {
-              srcPts.add(kpPiece[m.queryIdx].pt);
-              dstPts.add(target.keypoints[m.trainIdx].pt);
+              final kpP = kpPiece[m.queryIdx];
+              final kpT = target.keypoints[m.trainIdx];
+              srcPts.add(cv.Point2f(kpP.x, kpP.y));
+              dstPts.add(cv.Point2f(kpT.x, kpT.y));
             }
           }
         }
