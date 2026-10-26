@@ -24,7 +24,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.27.4'
           channel: 'stable'
           cache: true
 
@@ -61,10 +61,30 @@ jobs:
         run: flutter pub get
 
       - name: Run static analysis
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: |
+          set +e
+          ANALYZE_OUT=$(flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1)
+          ANALYZE_CODE=$?
+          echo "$ANALYZE_OUT"
+          if [ $ANALYZE_CODE -ne 0 ]; then
+            echo "$ANALYZE_OUT" | grep -E "error •" | while read -r line; do
+              echo "::error::$line"
+            done
+            exit $ANALYZE_CODE
+          fi
 
       - name: Build Release APK (arm64-v8a)
-        run: flutter build apk --release --target-platform android-arm64
+        run: |
+          set +e
+          BUILD_OUT=$(flutter build apk --release --target-platform android-arm64 2>&1)
+          BUILD_CODE=$?
+          echo "$BUILD_OUT"
+          if [ $BUILD_CODE -ne 0 ]; then
+            echo "$BUILD_OUT" | tail -n 35 | while read -r line; do
+              echo "::error::$line"
+            done
+            exit $BUILD_CODE
+          fi
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

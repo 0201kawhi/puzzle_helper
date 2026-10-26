@@ -217,15 +217,13 @@ class PieceSegmenter {
       );
 
       final fullPieceMask = cv.Mat.zeros(frameH, frameW, cv.MatType.CV_8UC1);
-      final singleContourVec = cv.VecVecPoint.fromList([targetContour.toList()]);
       cv.drawContours(
         fullPieceMask,
-        singleContourVec,
-        0,
+        contours,
+        validContourIndices[bestIdx],
         cv.Scalar.all(255),
         thickness: -1,
       );
-      singleContourVec.dispose();
 
       final croppedBgr = frameBgr.region(roiRect).clone();
       final croppedMask = fullPieceMask.region(roiRect).clone();
