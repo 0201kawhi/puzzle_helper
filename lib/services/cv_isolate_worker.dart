@@ -21,6 +21,7 @@ class CameraFramePacket {
   final int uvRowStride;
   final int uvPixelStride;
   final Offset targetPointNormalized;
+  final bool encodeJpeg;
 
   const CameraFramePacket({
     required this.width,
@@ -34,7 +35,54 @@ class CameraFramePacket {
     this.uvRowStride = 0,
     this.uvPixelStride = 1,
     required this.targetPointNormalized,
+    this.encodeJpeg = false,
   });
+
+  /// 建立擁有獨立記憶體緩衝區的封包複本（避免 Android CameraX ImageProxy 緩衝區回收覆寫），
+  /// 供「定格畫面 (Freeze Frame)」保存以及在定格狀態下自由點擊切換不同拼圖塊重新分析使用。
+  CameraFramePacket cloneWithIndependentBuffers({
+    Offset? targetPointNormalized,
+    bool? encodeJpeg,
+  }) {
+    return CameraFramePacket(
+      width: width,
+      height: height,
+      sensorOrientationDeg: sensorOrientationDeg,
+      isBgra: isBgra,
+      yPlaneOrBgraBytes: Uint8List.fromList(yPlaneOrBgraBytes),
+      uPlaneBytes:
+          uPlaneBytes != null ? Uint8List.fromList(uPlaneBytes!) : null,
+      vPlaneBytes:
+          vPlaneBytes != null ? Uint8List.fromList(vPlaneBytes!) : null,
+      yRowStride: yRowStride,
+      uvRowStride: uvRowStride,
+      uvPixelStride: uvPixelStride,
+      targetPointNormalized:
+          targetPointNormalized ?? this.targetPointNormalized,
+      encodeJpeg: encodeJpeg ?? this.encodeJpeg,
+    );
+  }
+
+  /// 在已複製過緩衝區的定格封包上更換目標準星座標
+  CameraFramePacket copyWithTarget({
+    required Offset targetPointNormalized,
+    bool encodeJpeg = false,
+  }) {
+    return CameraFramePacket(
+      width: width,
+      height: height,
+      sensorOrientationDeg: sensorOrientationDeg,
+      isBgra: isBgra,
+      yPlaneOrBgraBytes: yPlaneOrBgraBytes,
+      uPlaneBytes: uPlaneBytes,
+      vPlaneBytes: vPlaneBytes,
+      yRowStride: yRowStride,
+      uvRowStride: uvRowStride,
+      uvPixelStride: uvPixelStride,
+      targetPointNormalized: targetPointNormalized,
+      encodeJpeg: encodeJpeg,
+    );
+  }
 }
 
 /// 背景 Isolate 即時視覺運算調度器
@@ -44,7 +92,7 @@ class CameraFramePacket {
 class CvIsolateWorker {
   Isolate? _isolate;
   SendPort? _workerSendPort;
-  final ReceivePort _mainReceivePort = ReceivePort();
+  ReceivePort? _mainReceivePort;
   Completer<void>? _initCompleter;
   Completer<FrameAnalysisResult>? _pendingFrameCompleter;
   bool _isBusy = false;
@@ -56,8 +104,10 @@ class CvIsolateWorker {
   Future<void> startAndInitialize(PuzzleProject project) async {
     await dispose();
     _initCompleter = Completer<void>();
+    final receivePort = ReceivePort();
+    _mainReceivePort = receivePort;
 
-    _mainReceivePort.listen((message) {
+    receivePort.listen((message) {
       if (message is SendPort) {
         _workerSendPort = message;
         _workerSendPort!.send({
@@ -84,7 +134,8 @@ class CvIsolateWorker {
             _pendingFrameCompleter!.complete(FrameAnalysisResult.empty);
           }
           if (_initCompleter != null && !_initCompleter!.isCompleted) {
-            _initCompleter!.completeError(message['message'] ?? 'Unknown error');
+            _initCompleter!
+                .completeError(message['message'] ?? 'Unknown error');
           }
         }
       }
@@ -92,17 +143,39 @@ class CvIsolateWorker {
 
     _isolate = await Isolate.spawn(
       _isolateEntry,
-      _mainReceivePort.sendPort,
+      receivePort.sendPort,
       debugName: 'PuzzleVisionIsolate',
     );
 
     return _initCompleter!.future;
   }
 
-  /// 傳送單幀相機畫面至背景 Isolate 進行定位分析（若上一幀尚未完成則自動略過，避免佇列堆積）
+  /// 傳送單幀即時串流畫面至背景 Isolate（若上一幀尚未完成則自動略過，避免佇列堆積）
   Future<FrameAnalysisResult?> processCameraFrame(
       CameraFramePacket packet) async {
     if (_workerSendPort == null || _isBusy) return null;
+    _isBusy = true;
+    _pendingFrameCompleter = Completer<FrameAnalysisResult>();
+    _workerSendPort!.send({
+      'cmd': 'frame',
+      'packet': packet,
+    });
+    return _pendingFrameCompleter!.future;
+  }
+
+  /// 保證執行的單幀分析（用於「定格畫面」擷取快照與定格後點擊切換不同拼圖塊）
+  Future<FrameAnalysisResult?> processFrameGuaranteed(
+      CameraFramePacket packet) async {
+    if (_workerSendPort == null) return null;
+    // 若剛好有一幀即時串流正在運算中，先等待其完成再立刻處理定格幀
+    while (_isBusy && _pendingFrameCompleter != null) {
+      try {
+        await _pendingFrameCompleter!.future;
+      } catch (_) {
+        break;
+      }
+    }
+    if (_workerSendPort == null) return null;
     _isBusy = true;
     _pendingFrameCompleter = Completer<FrameAnalysisResult>();
     _workerSendPort!.send({
@@ -117,6 +190,8 @@ class CvIsolateWorker {
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
     _workerSendPort = null;
+    _mainReceivePort?.close();
+    _mainReceivePort = null;
     _isBusy = false;
   }
 
@@ -156,12 +231,34 @@ class CvIsolateWorker {
           }
 
           final packet = message['packet'] as CameraFramePacket;
-          final frameBgr = _convertCameraPacketToBgrMat(packet);
+
+          // 若需要定格快照 (encodeJpeg == true)，先以原解析度轉換並編碼出清晰 JPEG 供 UI 覆蓋顯示
+          Uint8List? encodedJpeg;
+          if (packet.encodeJpeg) {
+            final fullResBgr =
+                _convertCameraPacketToBgrMat(packet, fullResolution: true);
+            if (fullResBgr != null && !fullResBgr.isEmpty) {
+              final (ok, bytes) = cv.imencode('.jpg', fullResBgr);
+              if (ok) {
+                encodedJpeg = bytes;
+              }
+            }
+            fullResBgr?.dispose();
+          }
+
+          final frameBgr =
+              _convertCameraPacketToBgrMat(packet, fullResolution: false);
           if (frameBgr == null || frameBgr.isEmpty) {
             frameBgr?.dispose();
             mainSendPort.send({
               'type': 'frame_result',
-              'result': FrameAnalysisResult.empty,
+              'result': FrameAnalysisResult(
+                detectedPieces: const [],
+                activePieceId: null,
+                candidates: const [],
+                processingTimeMs: 0,
+                frozenFrameJpeg: encodedJpeg,
+              ),
             });
             return;
           }
@@ -186,6 +283,7 @@ class CvIsolateWorker {
               activePieceId: activeId,
               candidates: candidates,
               processingTimeMs: sw.elapsedMilliseconds,
+              frozenFrameJpeg: encodedJpeg,
             ),
           });
         } catch (e) {
@@ -202,14 +300,17 @@ class CvIsolateWorker {
     });
   }
 
-  /// 將 YUV420 (Android) 或 BGRA8888 (iOS) 相機原始緩衝區轉為已轉正且縮放至適中尺寸的 BGR Mat
-  static cv.Mat? _convertCameraPacketToBgrMat(CameraFramePacket p) {
+  /// 將 YUV420 (Android) 或 BGRA8888 (iOS) 相機原始緩衝區轉為已轉正的 BGR Mat
+  static cv.Mat? _convertCameraPacketToBgrMat(
+    CameraFramePacket p, {
+    required bool fullResolution,
+  }) {
     final int srcW = p.width;
     final int srcH = p.height;
     if (srcW <= 0 || srcH <= 0) return null;
 
-    // 為兼顧即時 AR 幀率與拼圖紋理清晰度，將長邊降採樣至約 640px
-    final int step = srcW > 960 ? 2 : 1;
+    // 即時分析時將長邊降採樣至約 640px 以提升幀率；定格快照則保留完整解析度
+    final int step = (!fullResolution && srcW > 960) ? 2 : 1;
     final int outW = srcW ~/ step;
     final int outH = srcH ~/ step;
     final bgrBytes = Uint8List(outW * outH * 3);
@@ -258,9 +359,9 @@ class CvIsolateWorker {
           final int uVal = uvIdx < uPlane.length ? uPlane[uvIdx] - 128 : 0;
           final int vVal = uvIdx < vPlane.length ? vPlane[uvIdx] - 128 : 0;
 
-          int r = (yVal + ((359 * vVal) >> 8)).clamp(0, 255);
-          int g = (yVal - ((88 * uVal + 183 * vVal) >> 8)).clamp(0, 255);
-          int b = (yVal + ((454 * uVal) >> 8)).clamp(0, 255);
+          final int r = (yVal + ((359 * vVal) >> 8)).clamp(0, 255);
+          final int g = (yVal - ((88 * uVal + 183 * vVal) >> 8)).clamp(0, 255);
+          final int b = (yVal + ((454 * uVal) >> 8)).clamp(0, 255);
 
           bgrBytes[dstIdx++] = b;
           bgrBytes[dstIdx++] = g;
@@ -269,8 +370,7 @@ class CvIsolateWorker {
       }
     }
 
-    final rawMat =
-        cv.Mat.fromList(outH, outW, cv.MatType.CV_8UC3, bgrBytes);
+    final rawMat = cv.Mat.fromList(outH, outW, cv.MatType.CV_8UC3, bgrBytes);
 
     // 依據手機鏡頭感測器方向 (Sensor Orientation) 旋轉為直立畫面
     switch (p.sensorOrientationDeg % 360) {

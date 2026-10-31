@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui';
 
 /// 拼圖塊幾何邊緣類型
@@ -145,11 +146,15 @@ class FrameAnalysisResult {
   /// 單幀視覺處理耗時（毫秒）
   final int processingTimeMs;
 
+  /// 定格模式 (Freeze Frame) 下由背景 Isolate 編碼回傳的直立 JPEG 畫面位元組
+  final Uint8List? frozenFrameJpeg;
+
   const FrameAnalysisResult({
     required this.detectedPieces,
     this.activePieceId,
     required this.candidates,
     required this.processingTimeMs,
+    this.frozenFrameJpeg,
   });
 
   DetectedPiece? get activePiece {

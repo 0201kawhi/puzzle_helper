@@ -15,6 +15,9 @@ class ArCameraOverlay extends StatelessWidget {
   final Offset targetPointNormalized;
   final ValueChanged<Offset> onTapTargetNormalized;
 
+  /// 直立狀態下相機畫面的寬高比 (uprightWidth / uprightHeight)，用於與 BoxFit.cover 精確對齊
+  final double cameraAspectRatio;
+
   const ArCameraOverlay({
     super.key,
     required this.detectedPieces,
@@ -22,7 +25,27 @@ class ArCameraOverlay extends StatelessWidget {
     required this.selectedCandidate,
     required this.targetPointNormalized,
     required this.onTapTargetNormalized,
+    this.cameraAspectRatio = 9.0 / 16.0,
   });
+
+  /// 計算 BoxFit.cover 在容器 Size 下的實際繪製矩形（含裁切偏移）
+  static Rect _computeCoverViewport(Size widgetSize, double imgAspect) {
+    final double safeAspect = imgAspect > 0.05 ? imgAspect : (9.0 / 16.0);
+    final double widgetAspect =
+        widgetSize.width / math.max(1.0, widgetSize.height);
+    double renderW;
+    double renderH;
+    if (widgetAspect > safeAspect) {
+      renderW = widgetSize.width;
+      renderH = widgetSize.width / safeAspect;
+    } else {
+      renderH = widgetSize.height;
+      renderW = widgetSize.height * safeAspect;
+    }
+    final double offsetX = (widgetSize.width - renderW) * 0.5;
+    final double offsetY = (widgetSize.height - renderH) * 0.5;
+    return Rect.fromLTWH(offsetX, offsetY, renderW, renderH);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -30,21 +53,30 @@ class ArCameraOverlay extends StatelessWidget {
       builder: (context, constraints) {
         final double w = constraints.maxWidth;
         final double h = constraints.maxHeight;
+        final Rect coverRect =
+            _computeCoverViewport(Size(w, h), cameraAspectRatio);
 
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapDown: (details) {
-            final nx = (details.localPosition.dx / w).clamp(0.05, 0.95);
-            final ny = (details.localPosition.dy / h).clamp(0.05, 0.95);
+            final nx = ((details.localPosition.dx - coverRect.left) /
+                    coverRect.width)
+                .clamp(0.03, 0.97);
+            final ny = ((details.localPosition.dy - coverRect.top) /
+                    coverRect.height)
+                .clamp(0.03, 0.97);
             onTapTargetNormalized(Offset(nx, ny));
           },
-          child: CustomPaint(
-            size: Size(w, h),
-            painter: _ArOverlayPainter(
-              detectedPieces: detectedPieces,
-              activePiece: activePiece,
-              selectedCandidate: selectedCandidate,
-              targetPointNormalized: targetPointNormalized,
+          child: ClipRect(
+            child: CustomPaint(
+              size: Size(w, h),
+              painter: _ArOverlayPainter(
+                detectedPieces: detectedPieces,
+                activePiece: activePiece,
+                selectedCandidate: selectedCandidate,
+                targetPointNormalized: targetPointNormalized,
+                coverViewport: coverRect,
+              ),
             ),
           ),
         );
@@ -58,13 +90,22 @@ class _ArOverlayPainter extends CustomPainter {
   final DetectedPiece? activePiece;
   final CandidateLocation? selectedCandidate;
   final Offset targetPointNormalized;
+  final Rect coverViewport;
 
   _ArOverlayPainter({
     required this.detectedPieces,
     required this.activePiece,
     required this.selectedCandidate,
     required this.targetPointNormalized,
+    required this.coverViewport,
   });
+
+  Offset _normToWidget(Offset norm) {
+    return Offset(
+      coverViewport.left + norm.dx * coverViewport.width,
+      coverViewport.top + norm.dy * coverViewport.height,
+    );
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -80,10 +121,7 @@ class _ArOverlayPainter extends CustomPainter {
     }
 
     // 2. 繪製準星 (Target Crosshair)
-    final crosshairCenter = Offset(
-      targetPointNormalized.dx * size.width,
-      targetPointNormalized.dy * size.height,
-    );
+    final crosshairCenter = _normToWidget(targetPointNormalized);
     _drawCrosshair(canvas, crosshairCenter);
 
     // 3. 繪製目前鎖定的目標拼圖塊輪廓與 AR 正向箭頭 (↑)
@@ -133,10 +171,7 @@ class _ArOverlayPainter extends CustomPainter {
 
     final path = Path();
     for (int i = 0; i < piece.contourPointsNormalized.length; i++) {
-      final pt = Offset(
-        piece.contourPointsNormalized[i].dx * size.width,
-        piece.contourPointsNormalized[i].dy * size.height,
-      );
+      final pt = _normToWidget(piece.contourPointsNormalized[i]);
       if (i == 0) {
         path.moveTo(pt.dx, pt.dy);
       } else {
@@ -171,10 +206,7 @@ class _ArOverlayPainter extends CustomPainter {
         ..style = PaintingStyle.stroke;
       canvas.drawPath(path, strokePaint);
 
-      final centerPx = Offset(
-        piece.centerNormalized.dx * size.width,
-        piece.centerNormalized.dy * size.height,
-      );
+      final centerPx = _normToWidget(piece.centerNormalized);
       final tp = TextPainter(
         text: TextSpan(
           text: '#${piece.id} 點擊鎖定',
@@ -198,17 +230,14 @@ class _ArOverlayPainter extends CustomPainter {
     required DetectedPiece piece,
     required CandidateLocation candidate,
   }) {
-    final centerPx = Offset(
-      piece.centerNormalized.dx * size.width,
-      piece.centerNormalized.dy * size.height,
-    );
+    final centerPx = _normToWidget(piece.centerNormalized);
 
     final double boxRadius = math
-        .min(
-          piece.boundingBoxNormalized.width * size.width,
-          piece.boundingBoxNormalized.height * size.height,
-        )
-        .clamp(48.0, 140.0) *
+            .min(
+              piece.boundingBoxNormalized.width * coverViewport.width,
+              piece.boundingBoxNormalized.height * coverViewport.height,
+            )
+            .clamp(48.0, 140.0) *
         0.38;
 
     final double rad = candidate.upArrowAngleInCameraDeg * math.pi / 180.0;
@@ -232,10 +261,10 @@ class _ArOverlayPainter extends CustomPainter {
     // 繪製箭頭尖端兩翼
     const double wingAngle = 2.6; // ~150 deg
     const double wingLen = 14.0;
-    final Offset wing1 =
-        tip + Offset(math.cos(rad + wingAngle), math.sin(rad + wingAngle)) * wingLen;
-    final Offset wing2 =
-        tip + Offset(math.cos(rad - wingAngle), math.sin(rad - wingAngle)) * wingLen;
+    final Offset wing1 = tip +
+        Offset(math.cos(rad + wingAngle), math.sin(rad + wingAngle)) * wingLen;
+    final Offset wing2 = tip +
+        Offset(math.cos(rad - wingAngle), math.sin(rad - wingAngle)) * wingLen;
 
     canvas.drawLine(tip, wing1, shadowPaint);
     canvas.drawLine(tip, wing2, shadowPaint);
@@ -277,14 +306,14 @@ class _ArOverlayPainter extends CustomPainter {
       textDirection: TextDirection.ltr,
     )..layout();
 
-    final double topY = math.max(
-      12.0,
-      piece.boundingBoxNormalized.top * size.height - 32.0,
-    );
+    final double pieceTopWidgetY =
+        coverViewport.top + piece.boundingBoxNormalized.top * coverViewport.height;
+    final double topY = math.max(16.0, pieceTopWidgetY - 32.0);
     final Rect pillRect = Rect.fromCenter(
       center: Offset(
-        centerPx.dx.clamp(badgeTp.width * 0.55 + 8, size.width - badgeTp.width * 0.55 - 8),
-        topY,
+        centerPx.dx.clamp(
+            badgeTp.width * 0.55 + 8, size.width - badgeTp.width * 0.55 - 8),
+        topY.clamp(16.0, size.height - 24.0),
       ),
       width: badgeTp.width + 18,
       height: badgeTp.height + 10,
