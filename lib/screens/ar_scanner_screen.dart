@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -511,12 +512,11 @@ class _ArScannerScreenState extends State<ArScannerScreen>
     }
 
     final Size rawPreviewSize = controller.value.previewSize!;
-    final int sensorDeg = controller.description.sensorOrientation % 360;
-    final bool isSwapped = sensorDeg == 90 || sensorDeg == 270;
+    // 本 App 鎖定直立模式 (portraitUp)，統一取短邊為直立寬、長邊為直立高（同時相容 Android 與 iOS）
     final double uprightW =
-        isSwapped ? rawPreviewSize.height : rawPreviewSize.width;
+        math.min(rawPreviewSize.width, rawPreviewSize.height);
     final double uprightH =
-        isSwapped ? rawPreviewSize.width : rawPreviewSize.height;
+        math.max(rawPreviewSize.width, rawPreviewSize.height);
     final double uprightAspectRatio =
         uprightH > 0 ? (uprightW / uprightH) : (9.0 / 16.0);
 

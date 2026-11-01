@@ -25,13 +25,22 @@
 
 ---
 
-## 如何打包 Android APK 進行實機測試
+## 如何打包 Android APK 與 iOS IPA 進行實機測試
 
-### 方式 A：使用 GitHub Actions 雲端自動打包 APK（免在本機安裝開發環境）
-本專案已內建 [`.github/workflows/build_apk.yml`](.github/workflows/build_apk.yml) 自動化建置腳本：
-1. 將 `D:\puzzle_helper` 推送至你的 GitHub 儲存庫（Repository）。
-2. 進入 GitHub 儲存庫頁面的 **Actions** 頁籤，點選 **Build Android APK** 工作流。
-3. 建置完成後，即可在頁面下方的 **Artifacts** 區塊直接下載 `puzzle-helper-release-apk`（內含 `app-release.apk`）傳送到 Android 手機安裝！
+### 方式 A：使用 GitHub Actions 雲端自動打包（免在本機安裝開發環境）
+本專案已內建 Android 與 iOS 雙平台自動化建置腳本：
+- **Android APK**：[`.github/workflows/build_apk.yml`](.github/workflows/build_apk.yml)
+- **iOS IPA (未簽名)**：[`.github/workflows/build_ios.yml`](.github/workflows/build_ios.yml)
+
+#### 1. Android 手機安裝
+進入 GitHub **Actions** → **Build Android APK** → 在 **Artifacts** 下載 `puzzle-helper-release-apk` 解壓縮取得 `app-release.apk`，傳送到 Android 手機安裝即可。
+
+#### 2. iPhone / iPad (iOS) 實機安裝（Windows 免 Mac 側載教學）
+進入 GitHub **Actions** → **Build iOS IPA** → 在 **Artifacts** 下載 `puzzle-helper-ios-ipa` 解壓縮取得 `puzzle-helper-ios-unsigned.ipa`，接著在 Windows 電腦上使用免費側載工具簽名安裝：
+1. 在 Windows 安裝 **[Sideloadly](https://sideloadly.io/)**（或 **AltStore**）以及 Apple 官方非 Microsoft Store 版 **iTunes** 與 **iCloud**。
+2. 用傳輸線將 iPhone 連接至電腦並點擊「信任此電腦」。
+3. 打開 Sideloadly，將 `puzzle-helper-ios-unsigned.ipa` 拖曳進去，輸入你自己的免費 **Apple ID** 帳號點擊 **Start** 即可自動完成個人簽名並安裝至 iPhone！
+4. 首次開啟前，在 iPhone 到 **「設定 → 一般 → VPN 與裝置管理」** 點選你的 Apple ID 並按「信任」，並在 **「設定 → 隱私權與安全性 → 開發者模式」** 開啟開發者模式即可正常使用。
 
 ### 方式 B：在 Windows 本機安裝 Flutter 編譯與實機除錯
 1. 安裝 [Flutter SDK (3.24+)](https://docs.flutter.dev/get-started/install/windows/mobile) 與 Android Studio（勾選 Android SDK Command-line Tools 與 NDK）。

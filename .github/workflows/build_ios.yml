@@ -1,0 +1,149 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build Puzzle Helper iOS IPA (Unsigned)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure wget is installed (required by opencv_dart iOS Makefile)
+        run: |
+          if ! command -v wget &> /dev/null; then
+            brew install wget
+          fi
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.4'
+          channel: 'stable'
+          cache: true
+
+      - name: Generate complete iOS project scaffolding and configure permissions
+        run: |
+          mkdir -p /tmp/puzzle_ios_backup
+          cp -r lib /tmp/puzzle_ios_backup/
+          cp pubspec.yaml /tmp/puzzle_ios_backup/
+          cp analysis_options.yaml /tmp/puzzle_ios_backup/
+
+          rm -rf ios test
+          flutter create . --project-name puzzle_helper --org com.puzzlehelper.app --platforms ios
+
+          rm -rf lib test
+          cp -r /tmp/puzzle_ios_backup/lib ./
+          cp /tmp/puzzle_ios_backup/pubspec.yaml ./
+          cp /tmp/puzzle_ios_backup/analysis_options.yaml ./
+
+          # Inject iOS Camera & Photo Library usage descriptions into Info.plist
+          PLIST="ios/Runner/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName '拼圖助手 AR'" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string '拼圖助手 AR'" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string '需要相機權限以拍攝拼圖參考圖並進行即時 AR 拼圖塊掃描定位'" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string '需要相簿權限以匯入高畫質拼圖完成圖與局部特寫參考圖'" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string '需要相簿權限以儲存拼圖參考圖'" "$PLIST" || true
+
+          # Ensure Xcode Runner project uses iOS 13.0 deployment target
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 12.0;/IPHONEOS_DEPLOYMENT_TARGET = 13.0;/g' ios/Runner.xcodeproj/project.pbxproj
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 11.0;/IPHONEOS_DEPLOYMENT_TARGET = 13.0;/g' ios/Runner.xcodeproj/project.pbxproj
+
+      - name: Install Flutter dependencies and configure Podfile
+        run: |
+          flutter pub get
+
+          cat << 'EOF' > ios/Podfile
+          platform :ios, '13.0'
+
+          ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+          project 'Runner', {
+            'Debug' => :debug,
+            'Profile' => :release,
+            'Release' => :release,
+          }
+
+          def flutter_root
+            generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+            unless File.exist?(generated_xcode_build_settings_path)
+              raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+            end
+
+            File.foreach(generated_xcode_build_settings_path) do |line|
+              matches = line.match(/FLUTTER_ROOT\=(.*)/)
+              return matches[1].strip if matches
+            end
+            raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+          end
+
+          require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+          flutter_ios_podfile_setup
+
+          target 'Runner' do
+            use_frameworks!
+            use_modular_headers!
+
+            flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+          end
+
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              flutter_additional_ios_build_settings(target)
+              target.build_configurations.each do |config|
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+                config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
+                  '$(inherited)',
+                  'PERMISSION_CAMERA=1',
+                  'PERMISSION_PHOTOS=1',
+                ]
+              end
+            end
+          end
+          EOF
+
+      - name: Run static analysis
+        run: |
+          set +e
+          ANALYZE_OUT=$(flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1)
+          ANALYZE_CODE=$?
+          echo "$ANALYZE_OUT"
+          if [ $ANALYZE_CODE -ne 0 ]; then
+            echo "$ANALYZE_OUT" | grep -E "error •" | while read -r line; do
+              echo "::error::$line"
+            done
+            exit $ANALYZE_CODE
+          fi
+
+      - name: Build iOS Release App (No Codesign)
+        run: |
+          set +e
+          BUILD_OUT=$(flutter build ios --release --no-codesign 2>&1)
+          BUILD_CODE=$?
+          echo "$BUILD_OUT"
+          if [ $BUILD_CODE -ne 0 ]; then
+            echo "$BUILD_OUT" | tail -n 45 | while read -r line; do
+              echo "::error::$line"
+            done
+            exit $BUILD_CODE
+          fi
+
+      - name: Package Runner.app into IPA
+        run: |
+          mkdir -p build/ios/ipa_payload/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/ipa_payload/Payload/
+          cd build/ios/ipa_payload
+          zip -qry ../puzzle-helper-ios-unsigned.ipa Payload
+
+      - name: Upload iOS IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: puzzle-helper-ios-ipa
+          path: build/ios/puzzle-helper-ios-unsigned.ipa

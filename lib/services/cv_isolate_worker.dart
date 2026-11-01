@@ -373,7 +373,10 @@ class CvIsolateWorker {
     final rawMat = cv.Mat.fromList(outH, outW, cv.MatType.CV_8UC3, bgrBytes);
 
     // 依據手機鏡頭感測器方向 (Sensor Orientation) 旋轉為直立畫面
-    switch (p.sensorOrientationDeg % 360) {
+    // 注意：iOS AVFoundation (BGRA) 若已將緩衝區轉為直立尺寸 (outH >= outW)，則不重複旋轉
+    final int effectiveRotationDeg =
+        (p.isBgra && outH >= outW) ? 0 : (p.sensorOrientationDeg % 360);
+    switch (effectiveRotationDeg) {
       case 90:
         final rotated = cv.rotate(rawMat, cv.ROTATE_90_CLOCKWISE);
         rawMat.dispose();
